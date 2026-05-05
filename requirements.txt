@@ -1,0 +1,15 @@
+# KI und Bildverarbeitung
+ultralytics>=8.3.0
+opencv-python
+
+# Bildschirmerfassung und Input-Simulation
+mss
+pydirectinput
+pynput
+pyautogui
+
+# Windows-spezifische API-Zugriffe
+pywin32
+
+# Mathematische Operationen
+numpy
