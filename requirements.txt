@@ -2,13 +2,13 @@
 ultralytics>=8.3.0
 opencv-python
 
-# Bildschirmerfassung und Input-Simulation
-mss
-pydirectinput
-pynput
-pyautogui
+# Hochleistungs-Bildschirmerfassung (Ersatz für mss)
+dxcam
 
-# Windows-spezifische API-Zugriffe
+# Input-Simulation (Direkte Windows-Events)
+pydirectinput
+
+# Windows-spezifische API-Zugriffe (Rechte Maustaste Abfrage)
 pywin32
 
 # Mathematische Operationen
