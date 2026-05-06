@@ -1,117 +1,105 @@
+import cv2
 import numpy as np
-import math
 import pydirectinput
+import win32api
+import math
+import dxcam
 from ultralytics import YOLO
-import dxcam # Deutlich schneller als mss
 
 pydirectinput.FAILSAFE = False
 
-class AimbotOpt:
-    def __init__(self, model_path="src/yolo26n.engine", width=416, height=416):
-        # AI: Nutzung von TensorRT (.engine) statt .pt für max FPS
-        self.model = YOLO(model_path, task='detect')
+class Aimbot:
+    def __init__(self, model_path="src/yolo26n.pt", width=416, height=416):
+        # Falls du eine .engine Datei hast, Pfad hier anpassen für 3x FPS
+        self.model = YOLO(model_path)
         
         self.width = width
         self.height = height
-        self.center = np.array([width / 2, height / 2])
         
-        # Performance: DXcam Setup (DirectX Frame Capturing)
+        # Kamera-Setup via DXCam (schnellste Methode unter Windows)
         self.camera = dxcam.create(output_color="BGR")
-        self.camera.start(target_fps=144, video_mode=True)
+        # Wir erfassen nur den Center-Crop für maximale Performance
+        screen_w, screen_h = pydirectinput.size()
+        left = (screen_w - width) // 2
+        top = (screen_h - height) // 2
+        right = left + width
+        bottom = top + height
+        self.region = (left, top, right, bottom)
         
-        # Parameter
+        self.center_x = width // 2
+        self.center_y = height // 2
+        
+        # Einstellungen
         self.conf_threshold = 0.60
         self.head_offset = 0.18
         self.fov_radius = 150
         self.smooth_factor = 0.4
 
-    def process_frame(self, aim_enabled):
-        # Performance: Frame direkt aus dem Puffer lesen
-        frame = self.camera.get_latest_frame()
+    def is_right_click_pressed(self):
+        return win32api.GetAsyncKeyState(0x02) < 0
+
+    def process_frame(self, aim_enabled, draw_debug=False):
+        """
+        WICHTIG: Diese Signatur muss exakt so aussehen!
+        self, aim_enabled, draw_debug=False
+        """
+        # Frame capture
+        frame = self.camera.grab(region=self.region)
         if frame is None:
-            return
+            return None
 
-        # Wir schneiden den Center-Crop aus dem Vollbild
-        h, w = frame.shape[:2]
-        crop_y = (h - self.height) // 2
-        crop_x = (w - self.width) // 2
-        frame_cropped = frame[crop_y:crop_y+self.height, crop_x:crop_x+self.width]
-
-        # Inferenz (Half-Precision wird von TensorRT automatisch gehandhabt)
-        results = self.model.predict(frame_cropped, classes=[0], verbose=False)
-        r = results[0]
-
-        # Vektorisierung (Python/Math): Keine For-Schleifen mehr!
-        boxes = r.boxes.xyxy.cpu().numpy()
-        confs = r.boxes.conf.cpu().numpy()
-
-        if len(boxes) == 0:
-            return
-
-        # 1. Filtern nach Confidence
-        valid_mask = confs >= self.conf_threshold
-        boxes = boxes[valid_mask]
-        confs = confs[valid_mask]
-
-        if len(boxes) == 0:
-            return
-
-        # 2. Koordinaten und Dimensionen als Vektoren berechnen
-        x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
-        widths = x2 - x1
-        heights = y2 - y1
-
-        # 3. Aspekt-Ratio Filter (Maske aktualisieren)
-        ratio_mask = widths <= heights * 1.2
-        boxes = boxes[ratio_mask]
-        confs = confs[ratio_mask]
-        widths = widths[ratio_mask]
-        heights = heights[ratio_mask]
-        x1, y1 = x1[ratio_mask], y1[ratio_mask]
-
-        if len(boxes) == 0:
-            return
-
-        # 4. Zielpunkte berechnen
-        target_x = x1 + widths / 2
-        target_y = y1 + heights * self.head_offset
-        targets = np.column_stack((target_x, target_y))
-
-        # 5. Distanzen zum Zentrum vektorisiert berechnen
-        distances = np.linalg.norm(targets - self.center, axis=1)
-
-        # 6. Hard-FOV Filter
-        fov_mask = distances <= self.fov_radius
-        confs = confs[fov_mask]
-        targets = targets[fov_mask]
-        distances = distances[fov_mask]
-
-        if len(targets) == 0:
-            return
-
-        # 7. Math: Normalisierter Score (0.0 bis 1.0)
-        # Distanz umkehren: je kleiner die Distanz, desto näher an 1
-        normalized_distances = 1.0 - (distances / self.fov_radius)
+        # Inferenz
+        results = self.model.predict(frame, classes=[0], verbose=False)
         
-        # Gewichtung: 70% Fokus auf Distanz (Fadenkreuznähe), 30% auf Modell-Confidence
-        scores = (confs * 0.3) + (normalized_distances * 0.7)
+        best_target = None
+        highest_score = -float('inf')
 
-        # 8. Bestes Ziel finden (argmax gibt den Index des höchsten Scores)
-        best_idx = np.argmax(scores)
-        best_target = targets[best_idx]
+        # Vektorisierte Logik (vereinfacht für Stabilität)
+        for r in results:
+            boxes = r.boxes.xyxy.cpu().numpy()
+            confs = r.boxes.conf.cpu().numpy()
 
-        # Input ausführen
-        if aim_enabled: # Hier fehlt noch der Hardware-Input-Check
+            for i, box in enumerate(boxes):
+                conf = confs[i]
+                if conf < self.conf_threshold: continue
+
+                x1, y1, x2, y2 = box
+                w, h = x2 - x1, y2 - y1
+                
+                # Aspekt-Ratio Filter
+                if w > h * 1.2: continue
+
+                t_x, t_y = x1 + w / 2, y1 + h * self.head_offset
+                dist = math.hypot(t_x - self.center_x, t_y - self.center_y)
+
+                if dist > self.fov_radius: continue
+
+                # Score-Berechnung
+                score = (conf * 100) - (dist * 0.5)
+
+                if score > highest_score:
+                    highest_score = score
+                    best_target = (t_x, t_y)
+
+                if draw_debug:
+                    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+
+        if draw_debug:
+            cv2.circle(frame, (self.center_x, self.center_y), self.fov_radius, (255, 0, 0), 1)
+
+        # Bewegung ausführen
+        if aim_enabled and self.is_right_click_pressed() and best_target:
             self._move_mouse_to_target(best_target[0], best_target[1])
 
-    def _move_mouse_to_target(self, target_x, target_y):
-        offset = np.array([target_x, target_y]) - self.center
-        move = (offset * self.smooth_factor).astype(int)
+        return frame if draw_debug else None
 
-        if np.any(np.abs(move) > 0):
-            # Gaming Engineer Info: pydirectinput ist unsafe. 
-            # In einem echten Produkt würde hier serielle Kommunikation zu einem Arduino stattfinden.
-            pydirectinput.moveRel(move[0], move[1], relative=True)
+    def _move_mouse_to_target(self, target_x, target_y):
+        offset_x = int((target_x - self.center_x) * self.smooth_factor)
+        offset_y = int((target_y - self.center_y) * self.smooth_factor)
+        if abs(offset_x) > 0 or abs(offset_y) > 0:
+            pydirectinput.moveRel(offset_x, offset_y, relative=True)
 
     def cleanup(self):
-        self.camera.stop()
+        # Wichtig, um die Kamera-Ressource freizugeben
+        if hasattr(self, 'camera'):
+            del self.camera
