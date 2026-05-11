@@ -11,7 +11,7 @@ MOUSEEVENTF_MOVE = 0x0001
 mouse_event = ctypes.windll.user32.mouse_event
 
 class Aimbot:
-    def __init__(self, model_path: str = "src/yolov8n.pt", width: int = 416, height: int = 416):
+    def __init__(self, model_path: str = "src/yolo26n.pt", width: int = 416, height: int = 416):
         self.width = width
         self.height = height
         self.center_x = width // 2
