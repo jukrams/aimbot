@@ -1,32 +1,52 @@
-import cv2
-import time
 import sys
 from pynput import keyboard
+from PyQt6.QtWidgets import QApplication
+from src.config import ConfigManager
 from src.aimbot import Aimbot
+from src.gui import OverlayGUI
 
 class AppController:
-    def __init__(self, debug_mode: bool = True):
-        self.aimbot = Aimbot()
-        self.running = True
+    def __init__(self):
+        self.config = ConfigManager()
+        self.aimbot = Aimbot(self.config)
+        
+        self.app = QApplication(sys.argv)
+        self.gui = OverlayGUI(self.aimbot, self.config)
+        
+        self.gui.toggle_requested.connect(self.set_aim_status)
+        self.gui.exit_requested.connect(self.exit_program)
+        self.gui.settings_changed.connect(self.reload_system)
+        
         self.aim_active = False
-        self.debug_mode = debug_mode
         self.COLORS = {"BLUE": "\033[94m", "RED": "\033[91m", "GREEN": "\033[92m", "RESET": "\033[0m"}
 
     def update_terminal(self):
         state = f"{self.COLORS['GREEN']}[ON]{self.COLORS['RESET']}" if self.aim_active else f"{self.COLORS['RED']}[OFF]{self.COLORS['RESET']}"
-        sys.stdout.write(f"\r{self.COLORS['BLUE']}STATUS:{self.COLORS['RESET']} {state} | F1: Toggle | F2: Exit | Right-Click: Aim    ")
+        sys.stdout.write(f"\r{self.COLORS['BLUE']}STATUS:{self.COLORS['RESET']} {state} | F1: Toggle | F2: Exit    ")
         sys.stdout.flush()
+
+    def set_aim_status(self, state: bool):
+        self.aim_active = state
+        self.gui.set_aim_state(self.aim_active)
+        self.update_terminal()
+
+    def reload_system(self):
+        """Wird getriggert, wenn Einstellungen im GUI gespeichert wurden"""
+        print(f"\n{self.COLORS['BLUE']}Lade Einstellungen neu...{self.COLORS['RESET']}")
+        self.aimbot.apply_settings()
+        self.update_terminal()
+
+    def exit_program(self):
+        self.app.quit()
 
     def on_press(self, key):
         try:
             if key == keyboard.Key.f1:
-                self.aim_active = not self.aim_active
-                self.update_terminal()
+                self.set_aim_status(not self.aim_active)
             elif key == keyboard.Key.f2:
-                self.running = False
+                self.exit_program()
                 return False
-        except AttributeError as e:
-            # Spezifische Fehler fangen, nicht blind alles ignorieren
+        except AttributeError:
             pass
 
     def run(self):
@@ -34,37 +54,21 @@ class AppController:
         listener.daemon = True
         listener.start()
 
-        if self.debug_mode:
-            cv2.namedWindow("Debug", cv2.WINDOW_NORMAL)
-            cv2.resizeWindow("Debug", 416, 416)
-
-        print("System aktiv. Starte Prozess-Loop...")
+        print("System aktiv. Öffne Interface...")
         self.update_terminal()
-        time.sleep(1)
-
+        self.gui.show()
+        
+        exit_code = 0
         try:
-            while self.running:
-                start_time = time.perf_counter()
-                
-                frame = self.aimbot.process_frame(self.aim_active, draw_debug=self.debug_mode)
-
-                if self.debug_mode and frame is not None:
-                    fps = int(1.0 / (time.perf_counter() - start_time + 0.0001))
-                    cv2.putText(frame, f"FPS: {fps}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
-                    cv2.circle(frame, (self.aimbot.center_x, self.aimbot.center_y), int(self.aimbot.fov_radius), (255, 0, 0), 2)
-                    cv2.imshow("Debug", frame)
-                
-                # waitKey zwingend erforderlich, sonst blockiert die OpenCV GUI
-                if self.debug_mode and cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-                    
-        except KeyboardInterrupt:
-            pass
+            exit_code = self.app.exec()
         finally:
             self.aimbot.cleanup()
-            cv2.destroyAllWindows()
             print(f"\n{self.COLORS['RED']}System offline.{self.COLORS['RESET']}")
+            sys.exit(exit_code)
 
 if __name__ == "__main__":
-    app = AppController(debug_mode=True)
+    import os
+    os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
+    
+    app = AppController()
     app.run()
