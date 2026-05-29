@@ -15,6 +15,7 @@ class InferenceThread(QThread):
         self.running = True
         self.aim_active = False
         self.paused = False
+        self.last_frame_id = None
 
     def run(self):
         while self.running:
@@ -22,13 +23,15 @@ class InferenceThread(QThread):
                 time.sleep(0.1)
                 continue
                 
-            start_time = time.perf_counter()
-            data = self.aimbot.process_frame(self.aim_active)
+            data = self.aimbot.get_latest_data()
             
-            if data is not None:
-                fps = int(1.0 / (time.perf_counter() - start_time + 0.0001))
-                data["fps"] = fps
+            # Nur senden, wenn Daten da sind und es sich um einen neuen Frame handelt
+            if data is not None and id(data["frame"]) != self.last_frame_id:
+                self.last_frame_id = id(data["frame"])
                 self.frame_ready.emit(data)
+            else:
+                # Schont die CPU, wenn die KI noch kein neues Bild geliefert hat
+                time.sleep(0.001)
 
     def stop(self):
         self.running = False
@@ -82,41 +85,34 @@ class SettingsDialog(QDialog):
         self.combo_model = QComboBox()
         self.combo_model.addItems(["yolov8n.pt", "yolov8s.pt", "src/custom_model.pt"])
         
-        # NEU: Checkbox für Visuals
         self.chk_visuals = QCheckBox("Visuals anzeigen (Boxen/FOV)")
         self.chk_visuals.setChecked(True)
 
         sys_layout.addRow("Erkennungs-Auflösung:", self.combo_res)
         sys_layout.addRow("YOLO Modell:", self.combo_model)
-        sys_layout.addRow("", self.chk_visuals) # Checkbox hinzufügen
+        sys_layout.addRow("", self.chk_visuals)
         tab_sys.setLayout(sys_layout)
 
-        # Tab 2: Aim Logik (mit dynamischen Beschriftungen)
+        # Tab 2: Aim Logik
         tab_aim = QWidget()
         aim_layout = QFormLayout()
         
         self.fov_container, self.slider_fov, self.lbl_fov = self._create_slider_with_label(64, 320, " px")
         self.conf_container, self.slider_conf, self.lbl_conf = self._create_slider_with_label(60, 95, " %")
         self.smooth_container, self.slider_smooth, self.lbl_smooth = self._create_slider_with_label(1, 100, " %")
-        
-        # NEU: Target Offset Slider (0% = Kopf, 50% = Bauch)
         self.offset_container, self.slider_offset, self.lbl_offset = self._create_slider_with_label(0, 50, " %")
         
         aim_layout.addRow("FOV Radius:", self.fov_container)
         aim_layout.addRow("Confidence:", self.conf_container)
         aim_layout.addRow("Smoothness:", self.smooth_container)
-        aim_layout.addRow("Trefferzone (Offset):", self.offset_container) # NEU
+        aim_layout.addRow("Trefferzone (Offset):", self.offset_container)
         tab_aim.setLayout(aim_layout)
 
         tabs.addTab(tab_sys, "Modell & Bild")
         tabs.addTab(tab_aim, "Aim-Logik")
         layout.addWidget(tabs)
 
-        # --- DYNAMISCHE LIMITS VERKNÜPFEN ---
-        # Ändert sich die Auflösung, muss das FOV-Limit neu berechnet werden
         self.combo_res.currentTextChanged.connect(self._update_fov_limits)
-
-        # Lade initial die Werte
         self._sync_ui_with_config()
 
         # --- SPEICHERN ---
@@ -128,7 +124,6 @@ class SettingsDialog(QDialog):
         self.setLayout(layout)
 
     def _create_slider_with_label(self, min_val, max_val, suffix=""):
-        """Erzeugt einen Slider verpackt mit einem Label für die Zahlenausgabe"""
         container = QWidget()
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -138,20 +133,17 @@ class SettingsDialog(QDialog):
         slider.setMaximum(max_val)
         
         label = QLabel()
-        label.setMinimumWidth(45) # Verhindert wackeln bei 2 vs 3 Ziffern
+        label.setMinimumWidth(45)
         label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         label.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
         
-        # Verbinde den Slider-Wert in Echtzeit mit dem Text des Labels
         slider.valueChanged.connect(lambda v: label.setText(f"{v}{suffix}"))
-        
         layout.addWidget(slider)
         layout.addWidget(label)
         
         return container, slider, label
 
     def _update_fov_limits(self, _=None):
-        """Berechnet Min/Max des FOV Sliders basierend auf der Auflösung"""
         res = int(self.combo_res.currentText())
         min_fov = int(res * 0.20)
         max_fov = res
@@ -159,7 +151,6 @@ class SettingsDialog(QDialog):
         self.slider_fov.setMinimum(min_fov)
         self.slider_fov.setMaximum(max_fov)
         
-        # Falls der alte Wert nun außerhalb der neuen Grenzen liegt, korrigieren
         current_val = self.slider_fov.value()
         if current_val < min_fov:
             self.slider_fov.setValue(min_fov)
@@ -210,27 +201,21 @@ class SettingsDialog(QDialog):
         self.combo_res.blockSignals(False)
         
         self.combo_model.setCurrentText(self.config.get("model_type"))
-        
-        # FOV Constraints vor dem Setzen des Wertes updaten!
         self._update_fov_limits()
-        
         self.slider_fov.setValue(int(self.config.get("fov")))
         
-        # Werte sicher auf GUI-Grenzen zwingen (falls eine alte Config fehlerhafte Daten hat)
         conf_val = int(self.config.get("confidence") * 100)
         self.slider_conf.setValue(max(60, min(95, conf_val)))
         
         smooth_val = int(self.config.get("smoothness") * 100)
         self.slider_smooth.setValue(max(1, min(100, smooth_val)))
 
-        # Trigger das Text-Update der Label einmal manuell
         self.slider_fov.valueChanged.emit(self.slider_fov.value())
         self.slider_conf.valueChanged.emit(self.slider_conf.value())
         self.slider_smooth.valueChanged.emit(self.slider_smooth.value())
 
         self.chk_visuals.setChecked(self.config.get("show_visuals"))
         
-        # Target Offset laden (Speicherformat 0.18 -> UI Format 18)
         offset_val = int(self.config.get("target_offset") * 100)
         self.slider_offset.setValue(max(0, min(50, offset_val)))
         self.slider_offset.valueChanged.emit(self.slider_offset.value())
@@ -337,27 +322,22 @@ class OverlayGUI(QWidget):
         if self.config.get("show_visuals"):
             scale_ratio = self.DISPLAY_SIZE / w
             
-            # FOV
             c_x, c_y = data["center"][0] * scale_ratio, data["center"][1] * scale_ratio
             fov = data["fov"] * scale_ratio
             painter.setPen(QPen(QColor(65, 105, 225), 2)) 
             painter.drawEllipse(int(c_x - fov), int(c_y - fov), int(fov * 2), int(fov * 2))
 
-            # Bounding Boxes und Score-Anzeige
             painter.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
             for box_data in data["boxes"]:
                 x1, y1, x2, y2 = [int(v * scale_ratio) for v in box_data["coords"]]
                 score = box_data["score"]
                 is_head = box_data["is_head"]
                 
-                # Köpfe (falls vom Modell geliefert) werden Rosa gezeichnet, Bodies Neongrün
                 color = QColor(255, 105, 180) if is_head else QColor(0, 255, 64)
                 painter.setPen(QPen(color, 2))
                 
-                # Rahmen zeichnen
                 painter.drawRect(x1, y1, x2 - x1, y2 - y1)
                 
-                # Text-Hintergrund für bessere Lesbarkeit
                 text_str = f"S: {score}"
                 text_rect = painter.fontMetrics().boundingRect(text_str)
                 text_rect.moveTo(x1, y1 - 15)
@@ -367,7 +347,6 @@ class OverlayGUI(QWidget):
                 painter.setPen(QPen(QColor(255, 255, 255)))
                 painter.drawText(x1, y1 - 4, text_str)
 
-            # Target Lock Point
             if data["target"]:
                 t_x, t_y = int(data["target"][0] * scale_ratio), int(data["target"][1] * scale_ratio)
                 painter.setPen(QPen(QColor(255, 50, 50), 2))
