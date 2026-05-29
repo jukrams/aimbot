@@ -83,8 +83,8 @@ class SettingsDialog(QDialog):
         self.combo_res = QComboBox()
         self.combo_res.addItems(["320", "416", "640"])
         self.combo_model = QComboBox()
-        self.combo_model.addItems(["yolov8n.pt", "yolov8s.pt", "src/custom_model.pt"])
-        
+        self.combo_model.addItems(["yolo26_csgo.pt", "yolov8s.pt", "src/yolo26_csgo.pt"])
+
         self.chk_visuals = QCheckBox("Visuals anzeigen (Boxen/FOV)")
         self.chk_visuals.setChecked(True)
 
